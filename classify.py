@@ -27,10 +27,10 @@ def train_and_evaluate(df, feature_prefixes=("P_node", "Q_vessel"),
 
     rf = RandomForestClassifier(n_estimators=300, random_state=seed)
     rf.fit(X_train, y_train)
-    rf_pred = rf.predit(X_test)
+    rf_pred = rf.predict(X_test)
 
-    svm = SVC(kernal="rbf", C=10, gamma="scale")
-    svm.fit(X_train,y_train)
+    svm = SVC(kernel="rbf", C=10, gamma="scale")
+    svm.fit(X_train_s,y_train)
     svm_pred = svm.predict(X_test_s)
 
     return {

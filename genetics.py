@@ -37,7 +37,7 @@ def sigmoid(x):
      return 1.0 / (1.0 + np.exp(-x))
 
 def genetic_severity(prs, base_range=(0.3, 0.9), rng: np.random.Generator = None, residual_noise=0.08):
-    lo, hi = base_rangep = sigmoid(prs)
+    lo, hi = base_range
     p = sigmoid(prs)
     severity = lo + p * (hi - lo)
     if rng is not None and residual_noise > 0: 
@@ -45,7 +45,7 @@ def genetic_severity(prs, base_range=(0.3, 0.9), rng: np.random.Generator = None
     return float(np.clip(severity, 0.05, 0.98))
 
 def genetic_clog_probability(prs, base_prob=0.5, scale=0.25):
-    return float(np.clip(np.clip(base_prob + scale * np.tanh(prs), 0.05, 0.95))) 
+    return float(np.clip(base_prob + scale * np.tanh(prs), 0.05, 0.95))
 
 def genetic_scenario(net, rng, np_rng: np.random.Generator, panel=None, healthy_prob=0.15):
     panel = panel or DEFAULT_SNP_PANEL
@@ -58,7 +58,7 @@ def genetic_scenario(net, rng, np_rng: np.random.Generator, panel=None, healthy_
          return {"type" : "healthy", "vessel_id" : -1, "severity" : 0.0, 
                  "genotype" :genotype, "prs": prs}
     
-    vessel_id = rng.randrange(net.n_named_vessel)
+    vessel_id = rng.randrange(net.n_named_vessels)
     clog_prob = genetic_clog_probability(prs)
     anamaly_type = "clog" if rng.random() < clog_prob else "leak"
     severity = genetic_severity(prs, rng=np_rng)

@@ -3,12 +3,12 @@ import random
 def apply_clog(net, vessel_id, severity):
     ves = net.vessels[vessel_id]
     remaining_radius_fraction = 1.0 - severity
-    ves.resistance = ves.base_resistanxe / (remaining_radius_fraction **4)
+    ves.resistance = ves.base_resistance / (remaining_radius_fraction **4)
 
 def apply_leak(net, vessel_id, severity):
-    ves = net.vessel[vessel_id]
+    ves = net.vessels[vessel_id]
     base_conductance = 1.0 / ves.base_resistance 
-    ves.leak_conductanxe = severity * base_conductance * 5.0 
+    ves.leak_conductance = severity * base_conductance * 5.0 
 
 def random_scenario(net, rng: random.Random, healthy_prob=0.15, severity_range=(0.3,0.9)):
     net.reset()

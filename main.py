@@ -36,13 +36,13 @@ def noise_sweep(noise_levels_mmhg, n_samples=1200, generations=4, seed=2):
             pressure_noise_mmhg=noise
         )
         results = train_and_evaluate(df, seed=seed)
-        accs.appened(results["random_forest"]["accuracy"])
+        accs.append(results["random_forest"]["accuracy"])
         print(f"  sensor noise = {noise:5.1f} mmHg -> RF accuracy = {accs[-1]:.3f}")
     return accs
 
 def main():
     net, clogged_vessel = demo_single_scenario()
-    df, net = generate_dataset(n_sample=3000, generations=4, seed=1, pressure_noise_mmhg=2.0)
+    df, net = generate_dataset(n_samples=3000, generations=4, seed=1, pressure_noise_mmhg=2.0)
     df.to_csv("dataset.csv", index=False)
     print(f"Dataset: {len(df)} rows. Class counts:\n{df['label_type'].value_counts()}")
 
@@ -58,10 +58,10 @@ def main():
 
     plot_network(net, highlight_vessel_id=clogged_vessel, 
                  title="Example network\n(red = clogged vessel)", ax=axes[0,0])
-    rf = results["random_results"]["model"]
-    importances = rf.features_importances_
+    rf = results["random_forest"]["model"]
+    importances = rf.feature_importances_
     order = np.argsort(importances)[::-1][:12]
-    feat_names = [results["featured_cols"][i] for i in order]
+    feat_names = [results["feature_cols"][i] for i in order]
     axes[0, 1].barh(feat_names[::-1], importances[order][::-1], color = "steelblue")
     axes[0,1].set_title("Random Forest\nfeature importance (top 12 sensors)")
 

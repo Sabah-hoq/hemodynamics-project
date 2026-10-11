@@ -36,7 +36,7 @@ def generate_dataset(n_samples=3000, generations=4, seed=0, pressure_noise_mmhg=
         row = _sensor_readings(pressures, flows, sensor_nodes, root_children,
                                np_rng, pressure_noise_mmhg, flow_noise_frac)
         row["label_type"] = scenario["type"]
-        row["label_vessel_id"] = scenario["vesse;_id"]
+        row["label_vessel_id"] = scenario["vessel_id"]
         row["label_severity"] = scenario["severity"]
         rows.append(row)
 
@@ -63,12 +63,12 @@ def generate_genetic_dataset(n_samples=3000, generations=4, seed=0,
                                np_rng, pressure_noise_mmgh, flow_noise_frac)
 
         for i, g in enumerate(scenario["genotype"]):
-            row[f"genotype{i}"] = int(g)
+            row[f"genotype_snp{i}"] = int(g)
         row["prs"] = scenario["prs"]
         row["label_type"] = scenario["type"]
         row["label_vessel_id"] = scenario["vessel_id"]
         row["label_severity"] = scenario["severity"]
-        row.append(row)
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     return df, net, panel
