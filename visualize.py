@@ -16,7 +16,7 @@ def _node_position(net):
               if child in net.nodes:
                   positions[child] = (xs[i], - gen)
                   next_frontier.append(child)
-                i += 1 
+              i += 1 
             frontier = next_frontier
             gen += 1
         positions[net.GROUND] = (0.5, -gen)
