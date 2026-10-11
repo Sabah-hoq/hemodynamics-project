@@ -58,7 +58,7 @@ def genetic_scenario(net, rng, np_rng: np.random.Generator, panel=None, healthy_
          return {"type" : "healthy", "vessel_id" : -1, "severity" : 0.0, 
                  "genotype" :genotype, "prs": prs}
     
-    vessel_id = rng.randerange(net.n_named_vessel)
+    vessel_id = rng.randrange(net.n_named_vessel)
     clog_prob = genetic_clog_probability(prs)
     anamaly_type = "clog" if rng.random() < clog_prob else "leak"
     severity = genetic_severity(prs, rng=np_rng)

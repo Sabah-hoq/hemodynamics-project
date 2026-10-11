@@ -16,7 +16,7 @@ def random_scenario(net, rng: random.Random, healthy_prob=0.15, severity_range=(
     if rng.random() < healthy_prob:
         return {"type": "healthy", "vessel_id" : -1, "severity" : 0.0}
 
-    vessel_id = rng.randerange(net.n_named_vessels)
+    vessel_id = rng.randrange(net.n_named_vessels)
     severity = rng.uniform(*severity_range)
     anomaly_type = rng.choice(["clog", "leak"])
 
