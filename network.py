@@ -27,7 +27,7 @@ class Vessel:
           self.leak_conductance = 0.0
 
      def reset(self):
-          self.base_resistance = self.base_resistance
+          self.resistance = self.base_resistance
           self.leak_conductance = 0.0
 
      def __repr__(self):
