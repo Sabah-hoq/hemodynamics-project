@@ -12,7 +12,7 @@ from visualize import plot_network
 from constants import MMHG_TO_PA
 
 def demo_single_scenario():
-    net = VesselNetwork(generation=4)
+    net = VesselNetwork(generations=4)
 
     pressures_healthy, _ = solve_network(net)
     clogged_vessel = 2
