@@ -1,9 +1,15 @@
 import numpy as np
 from constants import P_IN, P_OUT
 
-#fucntion writing
 
-def solve_network(net, p_in = P_IN, p_out = P_OUT):
+def build_system(net, p_in=P_IN, p_out=P_OUT):
+    """Assemble the linear system A V = b for nodal (Kirchhoff current law)
+    analysis of the vessel network: unknown node pressures V, with the
+    root (node 0) and ground fixed at p_in / p_out. Exposed separately from
+    solve_network so other modules (linalg_analysis.py) can inspect A
+    itself -- its condition number, its spectrum, its sensitivity to a
+    single vessel's resistance -- without re-deriving the assembly.
+    """
     unknown_nodes = net.internal_nodes
     index = {n: i for i, n in enumerate(unknown_nodes)}
     n_unknown = len(unknown_nodes)
@@ -35,6 +41,12 @@ def solve_network(net, p_in = P_IN, p_out = P_OUT):
             iv = index[v]
             A[iv, iv] += ves.leak_conductance
             b[iv] += ves.leak_conductance * p_out
+
+    return A, b, index, unknown_nodes, fixed
+
+
+def solve_network(net, p_in=P_IN, p_out=P_OUT):
+    A, b, index, unknown_nodes, fixed = build_system(net, p_in, p_out)
 
     V = np.linalg.solve(A, b)
 

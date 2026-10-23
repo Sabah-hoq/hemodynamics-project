@@ -10,18 +10,18 @@ def poiseuille_resistance(radius, length, viscosity=BLOOD_VISCOSITY):
      return 8.0 * viscosity * length / (np.pi * radius ** 4)
 
 class Vessel:
-     def __init__(self, vessel_id, u, v, radius=None, length=None, 
-                  explicit_resistance=None):
+     def __init__(self, vessel_id, u, v, radius=None, length=None,
+                  explicit_resistance=None, viscosity=BLOOD_VISCOSITY):
           self.id = vessel_id
           self.u = u
           self.v = v
-          self.radius = radius 
-          self.legnth = length 
+          self.radius = radius
+          self.legnth = length
 
-          if explicit_resistance is not None: 
+          if explicit_resistance is not None:
                self.base_resistance = explicit_resistance
-          else: 
-              self.base_resistance = poiseuille_resistance(radius, length)
+          else:
+              self.base_resistance = poiseuille_resistance(radius, length, viscosity)
 
           self.resistance = self.base_resistance
           self.leak_conductance = 0.0
@@ -37,11 +37,12 @@ class VesselNetwork:
     GROUND = -1
 
     def __init__(self, generations=4, root_radius=4e-3, root_length=0.03,
-                 terminal_resistance=3e8):
+                 terminal_resistance=3e8, viscosity=BLOOD_VISCOSITY):
         self.generations = generations
         self.root_radius = root_radius
         self.root_length = root_length
         self.terminal_resistance = terminal_resistance
+        self.viscosity = viscosity
 
         self.vessels = []
         self.nodes = {0}
@@ -60,7 +61,8 @@ class VesselNetwork:
             for parent in frontier:
                 for offset in (1, 2):
                     child = 2 * parent + offset
-                    self.vessels.append(Vessel(vid, parent, child, child_radius, child_length))
+                    self.vessels.append(Vessel(vid, parent, child, child_radius, child_length,
+                                               viscosity=self.viscosity))
                     vid += 1
                     self.nodes.add(child)
                     next_frontier.append(child)

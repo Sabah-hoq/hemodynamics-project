@@ -1,7 +1,9 @@
+import os
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np 
+import numpy as np
 
 from network import VesselNetwork
 from solver import solve_network
@@ -40,10 +42,14 @@ def noise_sweep(noise_levels_mmhg, n_samples=1200, generations=4, seed=2):
         print(f"  sensor noise = {noise:5.1f} mmHg -> RF accuracy = {accs[-1]:.3f}")
     return accs
 
+OUTPUT_DIR = "outputs"
+
+
 def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     net, clogged_vessel = demo_single_scenario()
     df, net = generate_dataset(n_samples=3000, generations=4, seed=1, pressure_noise_mmhg=2.0)
-    df.to_csv("dataset.csv", index=False)
+    df.to_csv(os.path.join(OUTPUT_DIR, "dataset.csv"), index=False)
     print(f"Dataset: {len(df)} rows. Class counts:\n{df['label_type'].value_counts()}")
 
     print("\nTraining Classifiers...")
@@ -67,6 +73,7 @@ def main():
 
     names = ["Random Forest", "SVM"]
     accs = [results["random_forest"]["accuracy"], results["svm"]["accuracy"]]
+    axes[1, 0].bar(names, accs, color=["steelblue", "indianred"])
     axes[1, 0].set_ylim(0, 1)
     axes[1, 0].set_title("Classifier accuracy\n(sensor noise = 2.0 mmHg)")
     for i, a in enumerate(accs):
@@ -80,8 +87,8 @@ def main():
     axes[1, 1].grid(alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("results.png", dpi=150)
-    print("\nSaved results.png and dataset.csv")
+    plt.savefig(os.path.join(OUTPUT_DIR, "results.png"), dpi=150)
+    print(f"\nSaved {OUTPUT_DIR}/results.png and {OUTPUT_DIR}/dataset.csv")
 
 
 if __name__ == "__main__":

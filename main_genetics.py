@@ -1,15 +1,21 @@
-import matplotlib 
+import os
+
+import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np 
+import numpy as np
 
 from dataset import generate_genetic_dataset
 from classify import train_and_evaluate, train_prs_regressor
 
+OUTPUT_DIR = "outputs"
+
+
 def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("Generating genetic-linked dataset...")
     df, net, panel = generate_genetic_dataset(n_samples=3000, seed=1)
-    df.to_cvs("dataset_genetics.csv", index=False)
+    df.to_csv(os.path.join(OUTPUT_DIR, "dataset_genetics.csv"), index=False)
     print(f"{len(df)} simulated patients. Type counts:\n{df['label_type'].value_counts()}")
 
     print("\n--- SNP panel ---")
@@ -33,14 +39,16 @@ def main():
 
     p = 1 - snp.q
     theoretical = [p**2, 2* p * snp.q, snp.q**2]
-    x = np.arrange(3)
+    x = np.arange(3)
     width = 0.35
-    axes[0,0].bar(x - width/2, observed.values, width, label="hardy-Weinberg\ntheory",
+    axes[0,0].bar(x - width/2, observed.values, width, label="observed",
                   color="indianred")
+    axes[0,0].bar(x + width/2, theoretical, width, label="Hardy-Weinberg\ntheory",
+                  color="steelblue")
     axes[0,0].set_xticks(x)
     axes[0,0].set_xticklabels(["0 copies", "1 copy", "2 copies"])
     axes[0,0].set_title(f"{snp.name}\ngenotype distribution (q ={snp.q})")
-    axes[0,0].lengend()
+    axes[0,0].legend()
 
     axes[0, 1].hist(df["prs"], bins=40, color="steelblue")
     axes[0, 1].set_title("Polygenic risk score distribution\n(standardized: mean 0, sd 1)")
@@ -67,8 +75,8 @@ def main():
     axes[1, 1].legend()
 
     plt.tight_layout()
-    plt.savefig("results_genetics.png", dpi=150)
-    print("\nSaved results_genetics.png and dataset_genetics.csv")
+    plt.savefig(os.path.join(OUTPUT_DIR, "results_genetics.png"), dpi=150)
+    print(f"\nSaved {OUTPUT_DIR}/results_genetics.png and {OUTPUT_DIR}/dataset_genetics.csv")
 
 
 if __name__ == "__main__":
