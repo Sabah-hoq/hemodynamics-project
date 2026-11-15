@@ -20,7 +20,9 @@ why switching between the two is one setting rather than a rewrite.
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime
+from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
@@ -37,15 +39,73 @@ LOCAL_EXPERIMENT = "hemodynamics-flow-anomaly"
 DEFAULT_DATABRICKS_EXPERIMENT = "/Shared/hemodynamics-flow-anomaly"
 
 
-def configure_local():
-    """Point MLflow at the SQLite store under outputs/. Returns the experiment name."""
+def _open_local_store():
     os.makedirs(LOCAL_ARTIFACTS, exist_ok=True)
-    mlflow.set_tracking_uri(f"sqlite:///{LOCAL_DB}")
+    # forward slashes and a proper file:// URI so this also works on Windows
+    mlflow.set_tracking_uri("sqlite:///" + Path(LOCAL_DB).as_posix())
     if mlflow.get_experiment_by_name(LOCAL_EXPERIMENT) is None:
         mlflow.create_experiment(
-            LOCAL_EXPERIMENT, artifact_location=f"file://{LOCAL_ARTIFACTS}"
+            LOCAL_EXPERIMENT, artifact_location=Path(LOCAL_ARTIFACTS).as_uri()
         )
     mlflow.set_experiment(LOCAL_EXPERIMENT)
+
+
+def _run_uninterrupted(fn):
+    """Run fn on its own thread and wait for it.
+
+    Streamlit stops the script thread mid-run whenever a widget changes.
+    If that lands while MLflow is creating its database tables, the file is
+    left half-built and every later start fails with "table ... already
+    exists". A separate thread is not stopped, so the setup always finishes.
+    """
+    outcome = {}
+
+    def work():
+        try:
+            fn()
+        except BaseException as e:  # hand any failure back to the caller
+            outcome["error"] = e
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in outcome:
+        raise outcome["error"]
+
+
+def _forget_local_engine():
+    """Close MLflow's cached connection to the local database file. Without
+    this MLflow keeps talking to the old file after it is renamed, and
+    Windows refuses to rename a file that is still open."""
+    from mlflow.store.tracking.sqlalchemy_store import SqlAlchemyStore
+    # the cache attribute has had two names across MLflow versions
+    for attr in ("_engine_map", "_db_uri_sql_alchemy_engine_map"):
+        engines = getattr(SqlAlchemyStore, attr, None) or {}
+        for uri in [u for u in engines if Path(LOCAL_DB).as_posix() in u]:
+            engines.pop(uri).dispose()
+
+
+def configure_local():
+    """Point MLflow at the SQLite store under outputs/. Returns the experiment name.
+
+    If the database file is half-built from an interrupted earlier start, it
+    is renamed (kept, not deleted) and a fresh one is created; the rename is
+    reported in `notices`.
+    """
+    try:
+        _run_uninterrupted(_open_local_store)
+    except Exception as e:
+        if "already exists" not in str(e) or not os.path.exists(LOCAL_DB):
+            raise
+        _forget_local_engine()
+        aside = LOCAL_DB.replace(".db", f".broken-{datetime.now():%Y%m%d-%H%M%S}.db")
+        os.replace(LOCAL_DB, aside)
+        notices.append(
+            "The local run history file was incomplete (an earlier start was "
+            f"interrupted). It was set aside as {os.path.basename(aside)} and a "
+            "new one was started."
+        )
+        _run_uninterrupted(_open_local_store)
     return LOCAL_EXPERIMENT
 
 
@@ -83,6 +143,13 @@ def configure_databricks(host, token, experiment_path=DEFAULT_DATABRICKS_EXPERIM
             f"Could not reach {host}. Check the workspace URL and your network. "
             f"({type(e).__name__})"
         ) from e
+    if resp.status_code in (401, 403) and not token.startswith("dapi"):
+        raise PermissionError(
+            "The workspace rejected that value, and it does not look like a "
+            "personal access token: those start with 'dapi'. The token is shown "
+            "once, in the pop-up right after you click Generate new token. The "
+            "long ID listed in the token table afterwards is not the token."
+        )
     if resp.status_code in (401, 403):
         raise PermissionError(
             "The workspace rejected the access token "
@@ -186,6 +253,8 @@ def delete_run(run_id):
 
 
 _active = None
+_lock = threading.RLock()
+notices = []   # one-off messages for the app to show, e.g. a recovered store
 
 
 def activate(backend, host=None, token=None, experiment_path=None):
@@ -195,12 +264,13 @@ def activate(backend, host=None, token=None, experiment_path=None):
     Returns the experiment name to pass to list_runs()."""
     global _active
     key = (backend, host, experiment_path)
-    if _active and _active[0] == key:
-        return _active[1]
-    _active = None  # a failed switch must not leave a stale "already set up"
-    if backend == "databricks":
-        name = configure_databricks(host, token, experiment_path)
-    else:
-        name = configure_local()
-    _active = (key, name)
-    return name
+    with _lock:  # two browser tabs must not set the store up at once
+        if _active and _active[0] == key:
+            return _active[1]
+        _active = None  # a failed switch must not leave a stale "already set up"
+        if backend == "databricks":
+            name = configure_databricks(host, token, experiment_path)
+        else:
+            name = configure_local()
+        _active = (key, name)
+        return name

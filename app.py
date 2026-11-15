@@ -764,6 +764,8 @@ with tab_track:
     try:
         tracker_label, exp_name = current_tracker()
         runs = tracking.list_runs(exp_name)
+        while tracking.notices:
+            st.warning(tracking.notices.pop(0))
     except Exception as e:
         runs = pd.DataFrame()
         st.error(f"Could not read runs: {e}")
