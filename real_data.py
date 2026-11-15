@@ -44,7 +44,16 @@ from solver import solve_network
 from anomaly import apply_clog, apply_leak, random_scenario
 from constants import MMHG_TO_PA, P_OUT
 
-DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uci_heart_disease.csv")
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_PATH = os.path.join(DATA_DIR, "uci_heart_disease.csv")
+NHANES_PATH = os.path.join(DATA_DIR, "nhanes_2009_2012_bp.csv")
+
+# The real cohorts bundled in data/. Each loads to the same core columns
+# (cohort, age, sex, systolic_bp_mmhg) plus whatever else that source has.
+COHORTS = {
+    "uci": "UCI Cleveland heart-disease patients",
+    "nhanes": "NHANES 2009-2012 US adults",
+}
 
 SEX_LABELS = {1: "male", 0: "female"}
 DIAGNOSIS_LABELS = {1: "heart disease present", 0: "no heart disease"}
@@ -63,6 +72,58 @@ def load_real_patients(path=DATA_PATH):
     df["sex_label"] = df["sex"].map(SEX_LABELS)
     df["diagnosis"] = df["target"].map(DIAGNOSIS_LABELS)
     return df
+
+
+def load_nhanes(path=NHANES_PATH):
+    """Load the bundled NHANES blood-pressure cohort: 4,633 adults (18+)
+    from the US National Health and Nutrition Examination Survey, 2009-2012
+    cycles, each with an averaged measured systolic and diastolic pressure.
+
+    Source: the CDC's public-domain NHANES data as packaged in the `NHANES`
+    R teaching dataset, reduced here to one row per participant, adults
+    with a blood-pressure reading, and ten columns. That package resamples
+    the survey to resemble a simple random sample, so it is suitable for a
+    realistic spread of pressures but not for official prevalence estimates.
+    """
+    return pd.read_csv(path)
+
+
+def load_cohort(key):
+    """One real cohort with standard columns first: cohort, age, sex,
+    systolic_bp_mmhg. `key` is a key of COHORTS."""
+    if key == "uci":
+        df = load_real_patients()
+        out = pd.DataFrame({
+            "cohort": COHORTS["uci"],
+            "age": df["age"],
+            "sex": df["sex_label"],
+            "systolic_bp_mmhg": df["resting_systolic_bp_mmhg"].astype(float),
+            "cholesterol_mg_dl": df["cholesterol_mg_dl"],
+            "max_heart_rate": df["max_heart_rate"],
+            "diagnosis": df["diagnosis"],
+        })
+    elif key == "nhanes":
+        df = load_nhanes()
+        out = pd.DataFrame({
+            "cohort": COHORTS["nhanes"],
+            "age": df["age"],
+            "sex": df["sex"],
+            "systolic_bp_mmhg": df["systolic_bp_mmhg"].astype(float),
+            "diastolic_bp_mmhg": df["diastolic_bp_mmhg"],
+            "pulse_bpm": df["pulse_bpm"],
+            "bmi": df["bmi"],
+            # NHANES reports cholesterol in mmol/L; 1 mmol/L = 38.67 mg/dL
+            "cholesterol_mg_dl": (df["total_cholesterol_mmol_l"] * 38.67).round(0),
+            "diabetes": df["diabetes"],
+        })
+    else:
+        raise KeyError(f"Unknown cohort {key!r}; choose from {list(COHORTS)}")
+    return out.reset_index(drop=True)
+
+
+def load_cohorts(keys=("uci", "nhanes")):
+    """Several real cohorts stacked into one table."""
+    return pd.concat([load_cohort(k) for k in keys], ignore_index=True)
 
 
 def real_bp_summary(df=None):

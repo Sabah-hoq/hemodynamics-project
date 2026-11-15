@@ -54,26 +54,58 @@ streamlit run app.py
 ```
 
 Streamlit will print a local URL (usually `http://localhost:8501`) —
-open it in a browser. The app has six tabs:
+open it in a browser. The app has seven tabs:
 
-1. **Network Explorer** — pick a scenario (healthy/clog/leak), see the
-   vessel tree and sensor pressures update live.
-2. **ML Detection & Statistics** — generate a synthetic dataset, train the
-   detector, see ROC/PR curves, cross-validated accuracy with a CI,
-   bootstrap CI, and the RF-vs-SVM significance test.
-3. **Linear Algebra** — condition number, sensitivity matrix, and
+1. **Network Explorer** — pick a scenario (healthy/clog/leak) and see the
+   vessel tree and sensor pressures update live. Hover a vessel for its
+   flow or a junction for its pressure.
+2. **Detection & Statistics** — simulate patients, train the detector,
+   and see ROC/PR curves, cross-validated accuracy with a CI, bootstrap
+   CI, and the RF-vs-SVM significance test. Each simulated patient's
+   arterial pressure can be one fixed value or drawn from real people
+   (see "Real data" below).
+3. **Data Explorer** — choose the simulated-patient table or the real
+   cohorts, filter rows, and chart any column against any other
+   (scatter, histogram, box plot, counts). The filtered rows can be
+   downloaded.
+4. **Linear Algebra** — condition number, sensitivity matrix, and
    algebraic connectivity, live against the sidebar's network parameters.
-4. **Genetics / PRS** — the SNP → polygenic-risk-score → anomaly pipeline.
-5. **Real Patient Data** — browse the real UCI patients, run one through
-   the trained detector with their real blood pressure, or upload your
-   own sensor-reading CSV for batch predictions.
-6. **Experiment Tracking** — every training run's settings, scores and
+5. **Genetics** — the SNP → polygenic-risk-score → anomaly pipeline.
+6. **Real Patient Data** — the real cohorts' blood pressures, and running
+   one real person's pressure through the trained detector, or uploading
+   your own sensor-reading CSV for batch predictions.
+7. **Experiment Tracking** — every training run's settings, scores and
    trained model are recorded with MLflow and listed for comparison.
    Stored in a local file by default, or in a Databricks workspace
    (see below).
 
+Charts are interactive: hover for exact values, drag to zoom,
+double-click to reset, click a legend entry to hide a series. Colours and
+corner styles are set in `.streamlit/config.toml` for light and dark mode.
+
 All network parameters (tree depth, vessel geometry, viscosity, boundary
 pressures) are adjustable from the sidebar and apply across tabs.
+
+### Real data
+
+Two real, de-identified cohorts are bundled in `data/`:
+
+| File | Who | People | Source |
+|---|---|---|---|
+| `uci_heart_disease.csv` | Patients referred for heart-disease testing, Cleveland | 303 | UCI Machine Learning Repository |
+| `nhanes_2009_2012_bp.csv` | US adults (18+) with a measured blood pressure | 4,633 | CDC NHANES 2009-2012, via the `NHANES` R teaching dataset, reduced to one row per participant |
+
+No public dataset pairs per-vessel flow readings with a tumor or
+occlusion diagnosis. Real data therefore enters as **real systolic blood
+pressure driving the simulated vessel network**: in Detection &
+Statistics, set *Arterial pressure of each simulated patient* to a real
+cohort and each simulated patient gets a pressure measured in a real
+person. This makes detection harder and more honest: with 3,000 patients
+and default settings, Random Forest localization accuracy drops from
+1.000 (one fixed pressure) to about 0.97 (real pressures). It is not a
+validation against real tumor outcomes. The NHANES teaching dataset is
+resampled, so it gives a realistic spread of pressures but should not be
+used for official prevalence figures.
 
 ### Experiment tracking and Databricks
 
@@ -120,11 +152,13 @@ classify.py           Random Forest / SVM localization, PRS regression
 stats.py              ROC/PR, thresholding, cross-validation, bootstrap, permutation, McNemar
 linalg_analysis.py    condition number, sensitivity matrix, graph Laplacian spectrum
 real_data.py          loads the real UCI dataset; real-BP-driven simulation & prediction
-visualize.py          vessel-tree diagram
+visualize.py          vessel-tree layout and the static diagram used by main.py
+charts.py             interactive Plotly charts used by the app
 tracking.py           MLflow experiment tracking (local SQLite or a Databricks workspace)
 app.py                Streamlit interactive dashboard (run this)
 main.py, main_genetics.py   original command-line entry points -> outputs/
-data/                 real input data (uci_heart_disease.csv)
+data/                 real input data (uci_heart_disease.csv, nhanes_2009_2012_bp.csv)
+.streamlit/config.toml  app colours for light and dark mode
 outputs/              generated datasets & figures (dataset.csv, results.png, ...)
 ```
 

@@ -3,15 +3,14 @@ Interactive dashboard for the hemodynamics flow-anomaly project.
 
     streamlit run app.py
 
-Five tabs: a live network explorer, the ML detector + its statistics,
-the linear-algebra diagnostics on the solver's matrix, the genetics/PRS
-model, and a real-human-data tab that drives the simulator with real
-clinical blood pressure and runs a real patient through the trained model.
+Seven tabs: a live network explorer, the detector and its statistics, a
+free-form data explorer, the linear-algebra diagnostics on the solver's
+matrix, the genetics/PRS model, real patient cohorts, and experiment
+tracking. Charts are interactive (hover, zoom, legend toggles).
 """
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
 
 from network import VesselNetwork
@@ -19,14 +18,36 @@ from solver import solve_network
 from anomaly import apply_clog, apply_leak
 from dataset import generate_dataset, generate_genetic_dataset
 from classify import train_and_evaluate, train_prs_regressor, build_location_label
-from visualize import plot_network
+from visualize import _node_position
 from constants import MMHG_TO_PA
 import stats
 import linalg_analysis as la
 import real_data as rd
 import tracking
+import charts
 
-st.set_page_config(page_title="Hemodynamics Flow-Anomaly Explorer", layout="wide")
+st.set_page_config(page_title="Vascular Flow Anomaly Detection", layout="wide")
+
+try:
+    DARK = st.context.theme.type == "dark"
+except Exception:
+    DARK = False
+PAL = charts.palette(DARK)
+LABEL_COLORS = charts.label_colors(PAL)
+
+BP_SOURCES = {
+    "Fixed value (sidebar)": None,
+    "Real: UCI Cleveland patients (303)": ("uci",),
+    "Real: NHANES US adults (4,633)": ("nhanes",),
+    "Real: both cohorts (4,936)": ("uci", "nhanes"),
+}
+
+
+def show(fig):
+    """Render a Plotly figure full width with a slim toolbar."""
+    st.plotly_chart(fig, width="stretch", theme="streamlit",
+                    config={"displaylogo": False,
+                            "modeBarButtonsToRemove": ["lasso2d", "select2d"]})
 
 
 # --------------------------------------------------------------- caching --
@@ -34,24 +55,17 @@ st.set_page_config(page_title="Hemodynamics Flow-Anomaly Explorer", layout="wide
 @st.cache_data(show_spinner=False)
 def cached_dataset(n_samples, generations, seed, pressure_noise, flow_noise,
                    root_radius, root_length, terminal_resistance, viscosity,
-                   p_in_mmhg, p_out_mmhg, healthy_prob):
+                   p_in_mmhg, p_out_mmhg, healthy_prob, bp_source="Fixed value (sidebar)"):
+    cohort_keys = BP_SOURCES[bp_source]
+    real_bp = (rd.load_cohorts(cohort_keys)["systolic_bp_mmhg"].values
+               if cohort_keys else None)
     df, _ = generate_dataset(
         n_samples=n_samples, generations=generations, seed=seed,
         pressure_noise_mmhg=pressure_noise, flow_noise_frac=flow_noise,
         root_radius=root_radius, root_length=root_length,
         terminal_resistance=terminal_resistance, viscosity=viscosity,
         p_in_mmhg=p_in_mmhg, p_out_mmhg=p_out_mmhg, healthy_prob=healthy_prob,
-    )
-    return df
-
-
-@st.cache_data(show_spinner=False)
-def cached_real_bp_dataset(n_samples, generations, seed, pressure_noise, flow_noise):
-    real_df = rd.load_real_patients()
-    df, _ = rd.generate_dataset_from_real_bp(
-        n_samples=n_samples, generations=generations, seed=seed,
-        pressure_noise_mmhg=pressure_noise, flow_noise_frac=flow_noise,
-        real_df=real_df,
+        p_in_values_mmhg=real_bp,
     )
     return df
 
@@ -66,8 +80,23 @@ def _train_bundle(df, seed):
 
 
 @st.cache_data(show_spinner=False)
-def cached_real_patients():
-    return rd.load_real_patients()
+def cached_cv(df, feature_cols, seed):
+    # every click anywhere reruns the script; keep the 5-fold refit out of that
+    from sklearn.ensemble import RandomForestClassifier
+    X = df[feature_cols].values
+    y_bin = (df["label_type"] != "healthy").astype(int).values
+    return stats.cross_validated_accuracy(
+        RandomForestClassifier(n_estimators=150, random_state=seed), X, y_bin, k=5)
+
+
+@st.cache_data(show_spinner=False)
+def cached_genetic_models(gdf, seed):
+    return train_and_evaluate(gdf, seed=seed), train_prs_regressor(gdf, seed=seed)
+
+
+@st.cache_data(show_spinner=False)
+def cached_cohorts():
+    return rd.load_cohorts()
 
 
 def current_tracker():
@@ -114,15 +143,15 @@ net_params = dict(
     viscosity=viscosity,
 )
 
-st.title("Cardiovascular Flow-Anomaly Simulation")
+st.title("Vascular Flow Anomaly Detection")
 st.caption(
-    "Physics 207 project — a binary vascular tree solved as a resistor network, "
-    "perturbed with synthetic clogs/leaks, and localized with a trained classifier."
+    "Physics 207 · A branching vessel network solved as a resistor circuit, "
+    "disturbed with simulated clogs and leaks, and read by a trained detector."
 )
 
-tab_explore, tab_ml, tab_linalg, tab_genetics, tab_real, tab_track = st.tabs(
-    ["🩺 Network Explorer", "📊 ML Detection & Statistics", "🧮 Linear Algebra",
-     "🧬 Genetics / PRS", "🧑‍⚕️ Real Patient Data", "📈 Experiment Tracking"]
+(tab_explore, tab_ml, tab_data, tab_linalg, tab_genetics, tab_real, tab_track) = st.tabs(
+    ["Network Explorer", "Detection & Statistics", "Data Explorer", "Linear Algebra",
+     "Genetics", "Real Patient Data", "Experiment Tracking"]
 )
 
 
@@ -154,10 +183,11 @@ with tab_explore:
         net, p_in=p_in_mmhg * MMHG_TO_PA, p_out=p_out_mmhg * MMHG_TO_PA)
 
     with col_plot:
-        fig, ax = plt.subplots(figsize=(7, 5.5))
-        plot_network(net, highlight_vessel_id=vessel_id, title=f"{scenario_type} scenario", ax=ax)
-        st.pyplot(fig)
-        plt.close(fig)
+        show(charts.vessel_tree(
+            net, _node_position(net), pressures, flows, healthy_flows, MMHG_TO_PA,
+            highlight_vessel_id=vessel_id, scenario=scenario_type, pal=PAL))
+        st.caption("Hover a vessel for its flow, or a junction for its pressure. "
+                   "Line width follows vessel radius.")
 
     st.markdown("##### Leaf (sensor) pressures: healthy vs. current scenario")
     rows = []
@@ -172,26 +202,21 @@ with tab_explore:
     st.dataframe(sensor_df.style.format({"healthy (mmHg)": "{:.2f}", "current (mmHg)": "{:.2f}",
                                          "Δ (mmHg)": "{:+.2f}"}), width="stretch", height=300)
 
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns([2, 1])
     with c1:
-        fig2, ax2 = plt.subplots(figsize=(5, 3))
-        ax2.bar(sensor_df["leaf node"].astype(str), sensor_df["Δ (mmHg)"], color="indianred")
-        ax2.set_title("Pressure drop vs. healthy baseline")
-        ax2.set_ylabel("Δ mmHg")
-        ax2.axhline(0, color="black", linewidth=0.8)
-        st.pyplot(fig2)
-        plt.close(fig2)
+        show(charts.delta_bars(sensor_df["leaf node"], sensor_df["Δ (mmHg)"], PAL,
+                               "Sensor pressure change from healthy", "Change (mmHg)"))
     with c2:
         root_children = [v.id for v in net.vessels if v.u == 0]
-        st.markdown("**Root-vessel flow (m³/s)**")
+        st.markdown("**Flow in the two main branches**")
         for vid in root_children:
-            st.metric(f"Q vessel {vid}", f"{flows[vid]:.3e}",
-                      delta=f"{flows[vid]-healthy_flows[vid]:.2e}")
+            st.metric(f"Vessel {vid} (mL/s)", f"{flows[vid] * 1e6:.3f}",
+                      delta=f"{(flows[vid] - healthy_flows[vid]) * 1e6:+.3f}", border=True)
 
 
 # =================================================================== ML ==
 with tab_ml:
-    st.subheader("Synthetic dataset → trained detector")
+    st.subheader("Simulated patients → trained detector")
     c1, c2, c3 = st.columns(3)
     with c1:
         n_samples = st.slider("Samples", 300, 6000, 3000, 100)
@@ -201,6 +226,11 @@ with tab_ml:
         flow_noise = st.slider("Sensor flow noise (fraction std)", 0.0, 0.2, 0.03, 0.01)
     with c3:
         healthy_prob = st.slider("Fraction healthy", 0.0, 0.5, 0.15, 0.05)
+        bp_source = st.selectbox(
+            "Arterial pressure of each simulated patient", list(BP_SOURCES),
+            help="Fixed gives every simulated patient the sidebar pressure. The real "
+                 "options draw each patient's pressure from blood pressures measured "
+                 "in real people, so the detector has to cope with real variation.")
         run_btn = st.button("Generate dataset & train", type="primary")
 
     state_key = "ml_df"
@@ -210,7 +240,7 @@ with tab_ml:
                 n_samples, generations, int(seed), pressure_noise, flow_noise,
                 net_params["root_radius"], net_params["root_length"],
                 net_params["terminal_resistance"], net_params["viscosity"],
-                p_in_mmhg, p_out_mmhg, healthy_prob,
+                p_in_mmhg, p_out_mmhg, healthy_prob, bp_source,
             )
             st.session_state[state_key] = df
             # the settings that produced this dataset; widgets can move
@@ -222,6 +252,7 @@ with tab_ml:
                 root_radius_mm=root_radius_mm, root_length_cm=root_length_cm,
                 viscosity=viscosity, terminal_resistance=terminal_resistance,
                 p_in_mmhg=p_in_mmhg, p_out_mmhg=p_out_mmhg,
+                pressure_source=bp_source,
             )
 
     df = st.session_state[state_key]
@@ -229,24 +260,22 @@ with tab_ml:
               f"{df['label_type'].value_counts().to_dict()}")
 
     with st.spinner("Training Random Forest + SVM..."):
-        results = _train_bundle(df, int(seed))
+        results = _train_bundle(df, st.session_state["ml_run_params"]["seed"])
     st.session_state["ml_results"] = results
     st.session_state["ml_net_params"] = dict(net_params)
 
     st.markdown("### Multi-class localization (which vessel, if any)")
     m1, m2 = st.columns(2)
-    m1.metric("Random Forest accuracy", f"{results['random_forest']['accuracy']:.3f}")
-    m2.metric("SVM accuracy", f"{results['svm']['accuracy']:.3f}")
+    m1.metric("Random Forest accuracy", f"{results['random_forest']['accuracy']:.3f}", border=True)
+    m2.metric("SVM accuracy", f"{results['svm']['accuracy']:.3f}", border=True)
 
     rf = results["random_forest"]["model"]
     importances = rf.feature_importances_
     order = np.argsort(importances)[::-1][:15]
     feat_names = [results["feature_cols"][i] for i in order]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.barh(feat_names[::-1], importances[order][::-1], color="steelblue")
-    ax.set_title("Random Forest feature importance (top 15 sensors)")
-    st.pyplot(fig)
-    plt.close(fig)
+    show(charts.horizontal_bars(feat_names, importances[order], PAL,
+                                "Which sensors the Random Forest relies on (top 15)",
+                                "Importance"))
 
     st.markdown("### Binary detector: \"is flow stopping anywhere?\" — thresholded & scored")
     bd = results["binary_detector"]
@@ -282,56 +311,38 @@ with tab_ml:
 
     col_roc, col_pr, col_thresh = st.columns(3)
     with col_roc:
-        fig, ax = plt.subplots(figsize=(4, 4))
-        ax.plot(roc["fpr"], roc["tpr"], color="steelblue")
-        ax.plot([0, 1], [0, 1], "k--", alpha=0.4)
-        ax.set_xlabel("False positive rate"); ax.set_ylabel("True positive rate")
-        ax.set_title(f"ROC curve (AUC={roc['roc_auc']:.3f})")
-        st.pyplot(fig); plt.close(fig)
+        show(charts.roc_curve(roc["fpr"], roc["tpr"], roc["roc_auc"], PAL))
     with col_pr:
-        fig, ax = plt.subplots(figsize=(4, 4))
-        ax.plot(roc["recall"], roc["precision"], color="indianred")
-        ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
-        ax.set_title(f"PR curve (AUC={roc['pr_auc']:.3f})")
-        st.pyplot(fig); plt.close(fig)
+        show(charts.pr_curve(roc["recall"], roc["precision"], roc["pr_auc"], PAL))
     with col_thresh:
-        fig, ax = plt.subplots(figsize=(4, 4))
-        ax.plot(ts["thresholds"], ts["sensitivity"], label="sensitivity", color="steelblue")
-        ax.plot(ts["thresholds"], ts["specificity"], label="specificity", color="indianred")
-        ax.axvline(ts["best_threshold"], color="gray", linestyle="--",
-                  label=f"best t={ts['best_threshold']:.2f}")
-        ax.set_xlabel("Probability threshold"); ax.legend(fontsize=8)
-        ax.set_title("Threshold sweep (Youden's J)")
-        st.pyplot(fig); plt.close(fig)
+        show(charts.threshold_sweep(ts["thresholds"], ts["sensitivity"], ts["specificity"],
+                                    ts["best_threshold"], PAL))
 
     st.caption(
         f"At the Youden's-J-optimal threshold ({ts['best_threshold']:.2f}), the detector gets "
         f"{ts['best_sensitivity']:.1%} sensitivity and {ts['best_specificity']:.1%} specificity "
-        "on held-out synthetic patients."
+        "on held-out simulated patients."
     )
 
     st.markdown("### Is this real, or did we get a lucky split?")
     s1, s2, s3 = st.columns(3)
     with s1:
         with st.spinner("5-fold cross-validating..."):
-            X = df[results["feature_cols"]].values
-            y_bin = (df["label_type"] != "healthy").astype(int).values
-            from sklearn.ensemble import RandomForestClassifier
-            cv = stats.cross_validated_accuracy(
-                RandomForestClassifier(n_estimators=150, random_state=int(seed)), X, y_bin, k=5)
-        st.metric("5-fold CV accuracy", f"{cv['mean']:.3f}",
+            cv = cached_cv(df, results["feature_cols"],
+                           st.session_state["ml_run_params"]["seed"])
+        st.metric("5-fold CV accuracy", f"{cv['mean']:.3f}", border=True,
                   help=f"95% CI [{cv['lo']:.3f}, {cv['hi']:.3f}]")
         st.caption(f"95% CI: [{cv['lo']:.3f}, {cv['hi']:.3f}]")
     with s2:
         boot = stats.bootstrap_accuracy_ci(
             results["random_forest"]["y_test"], results["random_forest"]["y_pred"], n_boot=1000)
-        st.metric("Bootstrap test accuracy", f"{boot['mean']:.3f}",
+        st.metric("Bootstrap test accuracy", f"{boot['mean']:.3f}", border=True,
                   help=f"95% CI [{boot['lo']:.3f}, {boot['hi']:.3f}]")
         st.caption(f"95% CI: [{boot['lo']:.3f}, {boot['hi']:.3f}]")
     with s3:
         mc = stats.mcnemar_test(results["random_forest"]["y_test"],
                                 results["random_forest"]["y_pred"], results["svm"]["y_pred"])
-        st.metric("RF vs SVM (McNemar p)", f"{mc['p_value']:.4f}")
+        st.metric("RF vs SVM (McNemar p)", f"{mc['p_value']:.4f}", border=True)
         st.caption(f"discordant: RF-only-right {mc['n10']}, SVM-only-right {mc['n01']}")
 
     st.markdown("### Accuracy vs. sensor noise")
@@ -344,15 +355,14 @@ with tab_ml:
                     min(n_samples, 1500), generations, int(seed), noise, flow_noise,
                     net_params["root_radius"], net_params["root_length"],
                     net_params["terminal_resistance"], net_params["viscosity"],
-                    p_in_mmhg, p_out_mmhg, healthy_prob,
+                    p_in_mmhg, p_out_mmhg, healthy_prob, bp_source,
                 )
                 r = _train_bundle(d, int(seed))
                 accs.append(r["random_forest"]["accuracy"])
-        fig, ax = plt.subplots(figsize=(6, 3.5))
-        ax.plot(noise_levels, accs, marker="o", color="steelblue")
-        ax.set_xlabel("Sensor pressure noise (mmHg std)"); ax.set_ylabel("RF accuracy")
-        ax.set_ylim(0, 1.05); ax.grid(alpha=0.3)
-        st.pyplot(fig); plt.close(fig)
+        show(charts.line_chart(noise_levels, [("Random Forest accuracy", accs, "blue")], PAL,
+                               "Accuracy as sensors get noisier",
+                               "Sensor pressure noise (mmHg std)", "Accuracy",
+                               yrange=[0, 1.05]))
 
 
 # =============================================================== LINALG ==
@@ -379,12 +389,12 @@ with tab_linalg:
     c1, c2 = st.columns(2)
     with c1:
         cn = la.condition_number(net_la, p_in=p_in_mmhg * MMHG_TO_PA, p_out=p_out_mmhg * MMHG_TO_PA)
-        st.metric("Condition number of A", f"{cn['condition_number']:.1f}")
+        st.metric("Condition number of A", f"{cn['condition_number']:.1f}", border=True)
         st.caption("How much a tiny error in resistance/pressure gets amplified in the solved "
                   "pressures. Near 1 is well-posed; rising sharply signals numerical fragility.")
     with c2:
         ac = la.algebraic_connectivity(net_la)
-        st.metric("Fiedler value (algebraic connectivity)", f"{ac['fiedler_value']:.3e}")
+        st.metric("Fiedler value (algebraic connectivity)", f"{ac['fiedler_value']:.3e}", border=True)
         st.caption("Second-smallest eigenvalue of the graph Laplacian. Drops toward 0 as the "
                   "network is pinched toward a bottleneck by a severe clog.")
 
@@ -400,30 +410,22 @@ with tab_linalg:
         conds.append(la.condition_number(net_sweep, p_in=p_in_mmhg * MMHG_TO_PA,
                                          p_out=p_out_mmhg * MMHG_TO_PA)["condition_number"])
         fiedlers.append(la.algebraic_connectivity(net_sweep)["fiedler_value"])
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(10, 3.5))
-    axA.plot(sev_grid, conds, color="steelblue", marker=".")
-    axA.set_xlabel("Clog severity"); axA.set_ylabel("cond(A)")
-    axA.set_title("Condition number vs. clog severity")
-    axB.plot(sev_grid, fiedlers, color="indianred", marker=".")
-    axB.set_xlabel("Clog severity"); axB.set_ylabel("Fiedler value")
-    axB.set_title("Algebraic connectivity vs. clog severity")
-    st.pyplot(fig); plt.close(fig)
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        show(charts.line_chart(sev_grid, [("Condition number", conds, "blue")], PAL,
+                               "Condition number vs. clog severity", "Clog severity", "cond(A)"))
+    with lc2:
+        show(charts.line_chart(sev_grid, [("Fiedler value", fiedlers, "blue")], PAL,
+                               "Algebraic connectivity vs. clog severity", "Clog severity",
+                               "Fiedler value"))
 
     st.markdown("##### Sensitivity matrix: ∂(leaf pressure)/∂(log vessel resistance)")
     st.caption("A finite-difference Jacobian of the linear solve — which sensor is most "
               "informative about which vessel, derived purely from the linear algebra "
               "(no training data needed). Rows = leaf sensors, columns = vessels.")
     sm = la.sensitivity_matrix(net_la, p_in=p_in_mmhg * MMHG_TO_PA, p_out=p_out_mmhg * MMHG_TO_PA)
-    fig, ax = plt.subplots(figsize=(10, 4))
-    im = ax.imshow(sm["J"], aspect="auto", cmap="RdBu_r",
-                   vmin=-np.max(np.abs(sm["J"])), vmax=np.max(np.abs(sm["J"])))
-    ax.set_yticks(range(len(sm["leaf_labels"])))
-    ax.set_yticklabels(sm["leaf_labels"], fontsize=7)
-    ax.set_xticks(range(0, len(sm["vessel_labels"]), max(1, len(sm["vessel_labels"]) // 20)))
-    ax.set_xticklabels(sm["vessel_labels"][::max(1, len(sm["vessel_labels"]) // 20)],
-                       fontsize=7, rotation=90)
-    plt.colorbar(im, ax=ax, label="mmHg per unit log(R)")
-    st.pyplot(fig); plt.close(fig)
+    show(charts.heatmap(sm["J"], sm["vessel_labels"], sm["leaf_labels"], PAL,
+                        "Vessel", "Sensor", "mmHg per unit log(R)"))
 
 
 # ============================================================= GENETICS ==
@@ -460,102 +462,104 @@ with tab_genetics:
                                    for s in panel]), width="stretch")
 
         with st.spinner("Training location classifier + PRS regressor..."):
-            loc_results = train_and_evaluate(gdf, seed=int(g_seed))
-            reg_results = train_prs_regressor(gdf, seed=int(g_seed))
+            loc_results, reg_results = cached_genetic_models(gdf, int(g_seed))
 
         m1, m2, m3 = st.columns(3)
-        m1.metric("Location-classifier accuracy", f"{loc_results['random_forest']['accuracy']:.3f}")
-        m2.metric("PRS regressor R²", f"{reg_results['r2']:.3f}")
-        m3.metric("PRS regressor MAE", f"{reg_results['mae']:.3f}")
+        m1.metric("Location-classifier accuracy", f"{loc_results['random_forest']['accuracy']:.3f}", border=True)
+        m2.metric("PRS regressor R²", f"{reg_results['r2']:.3f}", border=True)
+        m3.metric("PRS regressor MAE", f"{reg_results['mae']:.3f}", border=True)
 
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-        axes[0].hist(gdf["prs"], bins=40, color="steelblue")
-        axes[0].set_title("PRS distribution"); axes[0].set_xlabel("PRS")
-
-        anomalies = gdf[gdf["label_type"] != "healthy"]
-        colors = anomalies["label_type"].map({"clog": "tab:red", "leak": "tab:blue"})
-        axes[1].scatter(anomalies["prs"], anomalies["label_severity"], c=colors, alpha=0.4, s=10)
-        axes[1].set_title("Severity vs. PRS (red=clog, blue=leak)")
-        axes[1].set_xlabel("PRS"); axes[1].set_ylabel("Severity")
-
-        axes[2].scatter(reg_results["y_test"], reg_results["y_pred"], alpha=0.4, s=10, color="steelblue")
-        lims = [min(reg_results["y_test"].min(), reg_results["y_pred"].min()),
-               max(reg_results["y_test"].max(), reg_results["y_pred"].max())]
-        axes[2].plot(lims, lims, "k--", alpha=0.5)
-        axes[2].set_title(f"Predicted vs. true PRS (R²={reg_results['r2']:.2f})")
-        axes[2].set_xlabel("True PRS"); axes[2].set_ylabel("Predicted PRS")
-        st.pyplot(fig); plt.close(fig)
+        g1, g2, g3 = st.columns(3)
+        with g1:
+            show(charts.histogram([("PRS", gdf["prs"], "blue")], PAL,
+                                  "Polygenic risk score", "PRS", nbins=40))
+        with g2:
+            anomalies = gdf[gdf["label_type"] != "healthy"]
+            show(charts.scatter(anomalies["prs"], anomalies["label_severity"], PAL,
+                                "Severity vs. risk score", "PRS", "Severity",
+                                color_by=anomalies["label_type"], color_map=LABEL_COLORS,
+                                height=340))
+        with g3:
+            show(charts.scatter(reg_results["y_test"], reg_results["y_pred"], PAL,
+                                f"Predicted vs. true PRS · R² {reg_results['r2']:.2f}",
+                                "True PRS", "Predicted PRS", identity_line=True, height=340))
 
 
 # ================================================================ REAL ==
 with tab_real:
-    st.subheader("Real human clinical data")
+    st.subheader("Real patient cohorts")
     st.markdown(
-        "`data/uci_heart_disease.csv` is the real UCI **Cleveland Heart Disease** dataset: "
-        "303 real, de-identified patients with a clinically measured resting blood pressure. "
-        "No public dataset pairs real per-vessel flow sensors with a tumor/occlusion diagnosis, "
-        "so this tab is deliberately honest about what \"real data\" can mean here: real human "
-        "blood pressure driving the same physics engine and the same trained classifier, "
-        "not a validation against real tumor outcomes."
+        "Two sets of real, de-identified people are bundled in `data/`, each with a "
+        "measured systolic blood pressure:\n\n"
+        "- **UCI Cleveland**: 303 patients referred for heart-disease testing.\n"
+        "- **NHANES 2009-2012**: 4,633 adults from the US national health survey.\n\n"
+        "No public dataset pairs per-vessel flow readings with a tumor or occlusion "
+        "diagnosis. So real data enters here as real blood pressure driving the "
+        "simulated vessel network; it does not validate the detector against real "
+        "tumor outcomes."
     )
 
-    real_df = cached_real_patients()
-    real_summary = rd.real_bp_summary(real_df)
+    cohorts = cached_cohorts()
+    cohort_names = list(cohorts["cohort"].unique())
 
-    rcol1, rcol2 = st.columns([2, 1])
-    with rcol1:
-        st.markdown("##### Real patient table")
-        st.dataframe(
-            real_df[["age", "sex_label", "resting_systolic_bp_mmhg", "cholesterol_mg_dl",
-                    "max_heart_rate", "diagnosis"]],
-            width="stretch", height=250,
-        )
-    with rcol2:
-        st.metric("Real patients", real_summary["n"])
-        st.metric("Mean resting systolic BP", f"{real_summary['mean']:.1f} mmHg")
-        st.caption(f"range {real_summary['min']:.0f}–{real_summary['max']:.0f} mmHg, "
-                  f"std {real_summary['std']:.1f}")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Real people", f"{len(cohorts):,}", border=True)
+    for col, name in zip((k2, k3), cohort_names):
+        sub = cohorts[cohorts["cohort"] == name]["systolic_bp_mmhg"]
+        col.metric(f"Mean systolic · {name.split(' ')[0]}", f"{sub.mean():.1f} mmHg",
+                   help=f"{len(sub):,} people · range {sub.min():.0f} to {sub.max():.0f} mmHg · "
+                        f"std {sub.std():.1f}", border=True)
 
-    st.markdown("##### Real BP distribution vs. this app's simulated Pᵢₙ")
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.hist(real_summary["values"], bins=25, alpha=0.6, label="real patients (UCI)", color="indianred")
-    ax.axvline(p_in_mmhg, color="steelblue", linewidth=2, label=f"current simulator P_in = {p_in_mmhg}")
-    ax.set_xlabel("Systolic pressure (mmHg)"); ax.legend()
-    st.pyplot(fig); plt.close(fig)
+    show(charts.histogram(
+        [(name, cohorts[cohorts["cohort"] == name]["systolic_bp_mmhg"], key)
+         for name, key in zip(cohort_names, ("blue", "orange"))],
+        PAL, "Measured systolic pressure in each cohort", "Systolic pressure (mmHg)",
+        vline=(p_in_mmhg, f"sidebar pressure {p_in_mmhg}")))
+    st.caption("Each cohort is shown as a share of its own total, because one is fifteen "
+               "times larger than the other. Filter and chart these people freely in the "
+               "Data Explorer tab.")
+
+    st.markdown("---")
+    st.markdown("### Train the detector on real pressures")
+    st.info("In **Detection & Statistics**, set *Arterial pressure of each simulated "
+            "patient* to one of the real cohorts and click *Generate dataset & train*. "
+            "Each simulated patient then gets a pressure measured in a real person. "
+            "Both results are recorded, so the Experiment Tracking tab shows how much "
+            "real variation costs in accuracy.")
 
     st.markdown("---")
     st.markdown("### Run a real patient through the trained detector")
 
     if "ml_results" not in st.session_state:
-        st.info("Open **ML Detection & Statistics** once first to train a detector — this tab "
-               "reuses that trained model.")
+        st.info("Open **Detection & Statistics** once first to train a detector. This tab "
+                "reuses that trained model.")
     else:
         ml_results = st.session_state["ml_results"]
         ml_net_params = st.session_state["ml_net_params"]
         if ml_net_params != net_params:
-            st.warning("Sidebar network parameters have changed since the detector was trained "
-                      "on the ML tab. Predictions below still use the *trained* network's shape — "
-                      "retrain on the ML tab to match the current sidebar settings.")
+            st.warning("Sidebar network parameters have changed since the detector was "
+                       "trained. Predictions below still use the trained network's shape; "
+                       "retrain in Detection & Statistics to match the sidebar.")
         trained_net = make_network(ml_net_params)
-        schema = rd.sensor_schema(trained_net)
 
         c1, c2 = st.columns(2)
         with c1:
-            source = st.radio("Blood pressure source", ["Pick a real patient", "Enter my own"])
-            if source == "Pick a real patient":
+            source = st.radio("Blood pressure source", ["Pick a real person", "Enter my own"])
+            if source == "Pick a real person":
+                pick_cohort = st.selectbox("Cohort", cohort_names)
+                people = cohorts[cohorts["cohort"] == pick_cohort]
                 idx = st.selectbox(
-                    "Real patient (row)", real_df.index,
-                    format_func=lambda i: f"#{i}: age {real_df.loc[i,'age']}, "
-                                          f"{real_df.loc[i,'sex_label']}, "
-                                          f"{real_df.loc[i,'resting_systolic_bp_mmhg']} mmHg, "
-                                          f"{real_df.loc[i,'diagnosis']}")
-                bp_value = float(real_df.loc[idx, "resting_systolic_bp_mmhg"])
+                    "Person", people.index,
+                    format_func=lambda i: f"age {people.loc[i, 'age']:.0f}, "
+                                          f"{people.loc[i, 'sex']}, "
+                                          f"{people.loc[i, 'systolic_bp_mmhg']:.0f} mmHg")
+                bp_value = float(people.loc[idx, "systolic_bp_mmhg"])
             else:
-                bp_value = st.number_input("Your resting systolic BP (mmHg)", 70, 220, 120)
-            st.metric("Blood pressure used as Pᵢₙ", f"{bp_value:.0f} mmHg")
+                bp_value = st.number_input("Your resting systolic BP (mmHg)", 70, 230, 120)
+            st.metric("Pressure driving the network", f"{bp_value:.0f} mmHg", border=True)
 
         with c2:
-            real_scenario = st.radio("Scenario to simulate for this patient",
+            real_scenario = st.radio("Condition to simulate for this person",
                                      ["healthy", "clog", "leak"], key="real_scenario")
             real_vessel = None
             real_severity = 0.0
@@ -576,34 +580,22 @@ with tab_real:
             classes = rf_model.classes_
             top_idx = np.argsort(proba)[::-1][:5]
 
-            st.success(f"Predicted: **{pred_label}**  (ground truth injected: {applied['type']}"
-                      + (f" on vessel {applied['vessel_id']}, severity {applied['severity']:.2f}"
-                         if applied["type"] != "healthy" else "") + ")")
-            st.markdown("**Top class probabilities**")
-            st.dataframe(pd.DataFrame({"class": classes[top_idx], "probability": proba[top_idx]})
-                        .style.format({"probability": "{:.3f}"}), width="stretch")
+            truth = applied["type"] if applied["type"] == "healthy" else \
+                f"{applied['type']}_v{applied['vessel_id']}"
+            message = (f"Predicted: **{pred_label}** · simulated: **{truth}**"
+                       + (f" (severity {applied['severity']:.2f})"
+                          if applied["type"] != "healthy" else ""))
+            (st.success if pred_label == truth else st.error)(message)
+            trained_on = st.session_state["ml_run_params"]["pressure_source"]
+            if pred_label != truth and trained_on.startswith("Fixed"):
+                st.caption("This detector was trained with one fixed pressure, so a person "
+                           "whose pressure differs can be misread. Retrain on a real cohort "
+                           "to see the difference.")
+            show(charts.horizontal_bars([str(c) for c in classes[top_idx]], proba[top_idx], PAL,
+                                        "Most likely conditions", "Probability"))
 
             with st.expander("Sensor reading fed to the model"):
                 st.json(row)
-
-    st.markdown("---")
-    st.markdown("### Train on real-BP-calibrated synthetic data")
-    st.caption(
-        "Instead of a single fixed P_in, bootstrap-resample P_in from the real patient BP "
-        "distribution above (with jitter) for every simulated training patient — folding real "
-        "physiological variability into the training set itself, not just a single live query."
-    )
-    if st.button("Generate real-BP-calibrated dataset & compare accuracy"):
-        with st.spinner("Simulating patients with real-BP-sampled boundary conditions..."):
-            df_real_cal = cached_real_bp_dataset(2000, generations, 3, pressure_noise, 0.03)
-            results_real_cal = _train_bundle(df_real_cal, 3)
-        c1, c2 = st.columns(2)
-        c1.metric("Fixed-P_in RF accuracy",
-                 f"{st.session_state['ml_results']['random_forest']['accuracy']:.3f}"
-                 if "ml_results" in st.session_state else "train ML tab first")
-        c2.metric("Real-BP-calibrated RF accuracy", f"{results_real_cal['random_forest']['accuracy']:.3f}")
-        st.caption("A gap here shows how much the detector's reported accuracy depends on "
-                  "training with one fixed arterial pressure vs. real population variability.")
 
     st.markdown("---")
     st.markdown("### Batch predict from your own CSV")
@@ -622,14 +614,99 @@ with tab_real:
             out["predicted_label"] = preds
             st.dataframe(out, width="stretch")
             st.download_button("Download predictions", out.to_csv(index=False),
-                              file_name="predictions.csv")
+                               file_name="predictions.csv")
+
+
+# ========================================================= DATA EXPLORER ==
+with tab_data:
+    st.subheader("Data explorer")
+    st.caption("Choose a table, filter it, and chart any column against any other. "
+               "Hover for values, drag to zoom, double-click to reset.")
+
+    table_choice = st.radio(
+        "Table", ["Simulated patients (current training set)", "Real people (both cohorts)"],
+        horizontal=True)
+    if table_choice.startswith("Simulated"):
+        table = st.session_state["ml_df"].copy()
+        table["label_vessel_id"] = table["label_vessel_id"].astype(int)
+        leaf_cols = [c for c in table.columns if c.startswith("P_node")]
+        table.insert(0, "mean_sensor_pressure_mmhg", table[leaf_cols].mean(axis=1))
+        table.insert(1, "lowest_sensor_pressure_mmhg", table[leaf_cols].min(axis=1))
+        color_map = LABEL_COLORS
+    else:
+        table = cached_cohorts().copy()
+        color_map = None
+
+    numeric_cols = [c for c in table.columns if pd.api.types.is_numeric_dtype(table[c])]
+    category_cols = [c for c in table.columns
+                     if c not in numeric_cols or table[c].nunique() <= 40]
+    few_cols = [c for c in category_cols if table[c].nunique() <= 3]
+
+    with st.container(border=True):
+        f1, f2, f3 = st.columns(3)
+        filtered = table
+        filter_cats = [c for c in table.columns
+                       if c not in numeric_cols and table[c].nunique() <= 12]
+        for slot, col in zip((f1, f2), filter_cats[:2]):
+            options = sorted(table[col].dropna().unique())
+            keep = slot.multiselect(f"Filter: {col}", options, default=options,
+                                    key=f"flt_{table_choice}_{col}")
+            filtered = filtered[filtered[col].isin(keep)]
+        range_col = f3.selectbox("Range filter on", numeric_cols, key=f"rng_{table_choice}")
+        lo, hi = float(table[range_col].min()), float(table[range_col].max())
+        if hi > lo:
+            sel = f3.slider(f"{range_col} range", lo, hi, (lo, hi), key=f"rngv_{table_choice}_{range_col}")
+            filtered = filtered[filtered[range_col].between(*sel)]
+
+    e1, e2, e3, e4 = st.columns(4)
+    chart_type = e1.selectbox("Chart", ["Scatter", "Histogram", "Box plot", "Count"])
+    st.caption(f"{len(filtered):,} of {len(table):,} rows match the filters.")
+
+    if filtered.empty:
+        st.warning("No rows match the filters.")
+    elif chart_type == "Scatter":
+        x_col = e2.selectbox("X axis", numeric_cols, index=0)
+        y_col = e3.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1))
+        c_col = e4.selectbox("Colour by", ["(none)"] + few_cols,
+                             index=1 if few_cols else 0)
+        plot_df = filtered.dropna(subset=[x_col, y_col])
+        show(charts.scatter(plot_df[x_col], plot_df[y_col], PAL, None, x_col, y_col,
+                            color_by=None if c_col == "(none)" else plot_df[c_col],
+                            color_map=color_map, height=460))
+    elif chart_type == "Histogram":
+        x_col = e2.selectbox("Column", numeric_cols, index=0)
+        c_col = e3.selectbox("Split by", ["(none)"] + few_cols)
+        if c_col == "(none)":
+            groups = [(x_col, filtered[x_col].dropna(), "blue")]
+        else:
+            names = sorted(filtered[c_col].dropna().astype(str).unique())
+            keys = {n: k for n, k in zip(names, ("blue", "orange", "aqua"))}
+            if color_map:  # anomaly types keep their fixed colours
+                keys = {n: charts.LABEL_KEYS.get(n, keys[n]) for n in names}
+            groups = [(n, filtered[filtered[c_col].astype(str) == n][x_col].dropna(), keys[n])
+                      for n in names]
+        show(charts.histogram(groups, PAL, None, x_col))
+    elif chart_type == "Box plot":
+        y_col = e2.selectbox("Value", numeric_cols, index=0)
+        g_col = e3.selectbox("Group by", category_cols)
+        plot_df = filtered.dropna(subset=[y_col, g_col])
+        show(charts.box(plot_df[y_col], plot_df[g_col], PAL, None, g_col, y_col,
+                        color_map=color_map))
+    else:
+        g_col = e2.selectbox("Count by", category_cols)
+        show(charts.count_bars(filtered[g_col].dropna(), PAL, None, g_col))
+
+    with st.expander(f"Rows behind the chart ({len(filtered):,})"):
+        st.dataframe(filtered, width="stretch", height=320, hide_index=True)
+        st.download_button("Download these rows (CSV)", filtered.to_csv(index=False),
+                           file_name="explorer_rows.csv", mime="text/csv")
 
 
 # ============================================================== TRACKING ==
 with tab_track:
     st.subheader("Experiment tracking (MLflow, stored locally or in Databricks)")
     st.markdown(
-        "Each time the detector is trained in the **ML Detection & Statistics** tab, "
+        "Each time the detector is trained in the **Detection & Statistics** tab, "
         "its settings, scores and the trained model are saved as one *run*, so "
         "results can be compared and reproduced later instead of disappearing "
         "when the app closes. Runs are stored in a local file by default, or in "
@@ -692,21 +769,21 @@ with tab_track:
         st.error(f"Could not read runs: {e}")
 
     if runs.empty:
-        st.info("No runs recorded here yet. Train a detector in the ML Detection & Statistics tab.")
+        st.info("No runs recorded here yet. Train a detector in the Detection & Statistics tab.")
     else:
         metric_cols = [c for c in ["roc_auc", "pr_auc", "rf_accuracy", "svm_accuracy",
                                    "sensitivity", "specificity", "best_threshold"]
                        if c in runs.columns]
         k1, k2, k3 = st.columns(3)
-        k1.metric("Runs recorded", len(runs))
+        k1.metric("Runs recorded", len(runs), border=True)
         if "roc_auc" in runs:
             best = runs.loc[runs["roc_auc"].idxmax()]
-            k2.metric("Best ROC AUC", f"{best['roc_auc']:.4f}")
-            k3.metric("Best run", str(best["run_id"])[:8])
+            k2.metric("Best ROC AUC", f"{best['roc_auc']:.4f}", border=True)
+            k3.metric("Best run", str(best["run_id"])[:8], border=True)
 
         front = ["started", "run_id"] + metric_cols
         st.dataframe(runs[front + [c for c in runs.columns if c not in front and c != "run_name"]],
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         st.download_button("Download run history (CSV)", runs.to_csv(index=False),
                            file_name="run_history.csv", mime="text/csv")
 
@@ -722,9 +799,5 @@ with tab_track:
             default_x = param_cols.index("pressure_noise_mmhg") if "pressure_noise_mmhg" in param_cols else 0
             x_col = cx.selectbox("Setting (x axis)", param_cols, index=default_x)
             y_col = cy.selectbox("Score (y axis)", metric_cols)
-            fig, ax = plt.subplots(figsize=(7, 3.5))
-            ordered = runs.sort_values(x_col)
-            ax.plot(ordered[x_col], ordered[y_col], "o", color="steelblue")
-            ax.set_xlabel(x_col); ax.set_ylabel(y_col); ax.grid(alpha=0.3)
-            ax.set_title(f"{y_col} across {len(runs)} recorded runs")
-            st.pyplot(fig); plt.close(fig)
+            show(charts.scatter(runs[x_col], runs[y_col], PAL,
+                                f"{y_col} across {len(runs)} recorded runs", x_col, y_col))

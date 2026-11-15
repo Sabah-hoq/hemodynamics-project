@@ -23,7 +23,17 @@ def _sensor_readings(pressure, flows, sensor_nodes, root_children,
 
 def generate_dataset(n_samples=3000, generations=4, seed=0, pressure_noise_mmhg=2.0, flow_noise_frac=0.03,
                      p_in_mmhg=None, p_out_mmhg=None, healthy_prob=0.15,
-                     severity_range=(0.3, 0.9), **network_kwargs):
+                     severity_range=(0.3, 0.9), p_in_values_mmhg=None,
+                     p_in_jitter_mmhg=3.0, **network_kwargs):
+    """Simulate n_samples patients and return (DataFrame, network).
+
+    By default every patient has the same arterial (root) pressure,
+    p_in_mmhg. Pass p_in_values_mmhg (an array of measured systolic
+    pressures from real people) to give each simulated patient a pressure
+    drawn at random from those measurements instead, plus a little Gaussian
+    jitter so repeated draws of one person are not identical. The pressure
+    used is stored in the `p_in_mmhg` column either way.
+    """
     rng = random.Random(seed)
     np_rng = np.random.default_rng(seed)
     net = VesselNetwork(generations=generations, **network_kwargs)
@@ -37,9 +47,15 @@ def generate_dataset(n_samples=3000, generations=4, seed=0, pressure_noise_mmhg=
     rows = []
     for _ in range(n_samples):
         scenario = random_scenario(net, rng, healthy_prob=healthy_prob, severity_range=severity_range)
-        pressures, flows = solve_network(net, p_in=p_in, p_out=p_out)
+        if p_in_values_mmhg is not None:
+            drawn = p_in_values_mmhg[np_rng.integers(0, len(p_in_values_mmhg))]
+            patient_p_in = (drawn + np_rng.normal(0, p_in_jitter_mmhg)) * MMHG_TO_PA
+        else:
+            patient_p_in = p_in
+        pressures, flows = solve_network(net, p_in=patient_p_in, p_out=p_out)
         row = _sensor_readings(pressures, flows, sensor_nodes, root_children,
                                np_rng, pressure_noise_mmhg, flow_noise_frac)
+        row["p_in_mmhg"] = patient_p_in / MMHG_TO_PA
         row["label_type"] = scenario["type"]
         row["label_vessel_id"] = scenario["vessel_id"]
         row["label_severity"] = scenario["severity"]
