@@ -54,7 +54,7 @@ streamlit run app.py
 ```
 
 Streamlit will print a local URL (usually `http://localhost:8501`) —
-open it in a browser. The app has five tabs:
+open it in a browser. The app has six tabs:
 
 1. **Network Explorer** — pick a scenario (healthy/clog/leak), see the
    vessel tree and sensor pressures update live.
@@ -67,9 +67,36 @@ open it in a browser. The app has five tabs:
 5. **Real Patient Data** — browse the real UCI patients, run one through
    the trained detector with their real blood pressure, or upload your
    own sensor-reading CSV for batch predictions.
+6. **Experiment Tracking** — every training run's settings, scores and
+   trained model are recorded with MLflow and listed for comparison.
+   Stored in a local file by default, or in a Databricks workspace
+   (see below).
 
 All network parameters (tree depth, vessel geometry, viscosity, boundary
 pressures) are adjustable from the sidebar and apply across tabs.
+
+### Experiment tracking and Databricks
+
+Each time the detector is trained in the ML tab, one *run* is recorded:
+the settings (samples, seed, noise, network geometry, pressures), the
+scores (accuracy, ROC AUC, PR AUC, chosen threshold, sensitivity,
+specificity) and, optionally, the trained model. Training is seeded, so a
+configuration that is already recorded is not recorded twice.
+
+- **Local (default, no account).** Runs go to `outputs/mlflow.db`, models
+  to `outputs/mlartifacts/`. Both are git-ignored. For MLflow's own
+  interface: `mlflow ui --backend-store-uri sqlite:///outputs/mlflow.db`.
+- **Databricks.** In the Experiment Tracking tab choose *Databricks
+  workspace* and enter your workspace URL
+  (`https://dbc-....cloud.databricks.com`), a personal access token
+  (Databricks: User Settings > Developer > Access tokens) and an
+  experiment path such as `/Users/<your login email>/hemodynamics`. Runs
+  then appear under Experiments in the workspace. The token is held in
+  memory for the session and never written to disk.
+
+The dataset here is a few thousand rows, so Databricks is used for what
+it adds at this size (a shared, permanent record of experiments and
+models), not for cluster computing.
 
 ### Running the original command-line scripts
 
@@ -94,6 +121,7 @@ stats.py              ROC/PR, thresholding, cross-validation, bootstrap, permuta
 linalg_analysis.py    condition number, sensitivity matrix, graph Laplacian spectrum
 real_data.py          loads the real UCI dataset; real-BP-driven simulation & prediction
 visualize.py          vessel-tree diagram
+tracking.py           MLflow experiment tracking (local SQLite or a Databricks workspace)
 app.py                Streamlit interactive dashboard (run this)
 main.py, main_genetics.py   original command-line entry points -> outputs/
 data/                 real input data (uci_heart_disease.csv)

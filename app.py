@@ -24,6 +24,7 @@ from constants import MMHG_TO_PA
 import stats
 import linalg_analysis as la
 import real_data as rd
+import tracking
 
 st.set_page_config(page_title="Hemodynamics Flow-Anomaly Explorer", layout="wide")
 
@@ -69,6 +70,16 @@ def cached_real_patients():
     return rd.load_real_patients()
 
 
+def current_tracker():
+    """Activate the tracking store this session chose (set in the Experiment
+    Tracking tab) and return (label, experiment_name)."""
+    dbx = st.session_state.get("dbx")
+    if st.session_state.get("track_backend") == "Databricks workspace" and dbx:
+        name = tracking.activate("databricks", dbx["host"], dbx["token"], dbx["experiment"])
+        return "Databricks", name
+    return "local file", tracking.activate("local")
+
+
 def make_network(params):
     return VesselNetwork(
         generations=params["generations"],
@@ -109,9 +120,9 @@ st.caption(
     "perturbed with synthetic clogs/leaks, and localized with a trained classifier."
 )
 
-tab_explore, tab_ml, tab_linalg, tab_genetics, tab_real = st.tabs(
+tab_explore, tab_ml, tab_linalg, tab_genetics, tab_real, tab_track = st.tabs(
     ["🩺 Network Explorer", "📊 ML Detection & Statistics", "🧮 Linear Algebra",
-     "🧬 Genetics / PRS", "🧑‍⚕️ Real Patient Data"]
+     "🧬 Genetics / PRS", "🧑‍⚕️ Real Patient Data", "📈 Experiment Tracking"]
 )
 
 
@@ -202,6 +213,16 @@ with tab_ml:
                 p_in_mmhg, p_out_mmhg, healthy_prob,
             )
             st.session_state[state_key] = df
+            # the settings that produced this dataset; widgets can move
+            # afterwards without regenerating, so read these, not the widgets
+            st.session_state["ml_run_params"] = dict(
+                n_samples=n_samples, seed=int(seed),
+                pressure_noise_mmhg=pressure_noise, flow_noise_frac=flow_noise,
+                healthy_prob=healthy_prob, generations=generations,
+                root_radius_mm=root_radius_mm, root_length_cm=root_length_cm,
+                viscosity=viscosity, terminal_resistance=terminal_resistance,
+                p_in_mmhg=p_in_mmhg, p_out_mmhg=p_out_mmhg,
+            )
 
     df = st.session_state[state_key]
     st.caption(f"{len(df)} simulated patients · class balance: "
@@ -231,6 +252,33 @@ with tab_ml:
     bd = results["binary_detector"]
     roc = stats.roc_pr_analysis(bd["y_test"], bd["y_proba"])
     ts = stats.threshold_sweep(bd["y_test"], bd["y_proba"])
+
+    # ---- record this training run (once per distinct configuration) ----
+    if st.session_state.get("track_enabled", True):
+        run_params = st.session_state["ml_run_params"]
+        try:
+            tracker_label, _ = current_tracker()
+            sig = (tracker_label, tuple(sorted(run_params.items())))
+            logged = st.session_state.setdefault("logged_runs", {})
+            if sig not in logged:
+                with st.spinner(f"Recording run ({tracker_label})..."):
+                    logged[sig] = tracking.log_training_run(
+                        run_params,
+                        {
+                            "rf_accuracy": results["random_forest"]["accuracy"],
+                            "svm_accuracy": results["svm"]["accuracy"],
+                            "roc_auc": roc["roc_auc"],
+                            "pr_auc": roc["pr_auc"],
+                            "best_threshold": ts["best_threshold"],
+                            "sensitivity": ts["best_sensitivity"],
+                            "specificity": ts["best_specificity"],
+                        },
+                        model=bd["model"] if st.session_state.get("track_model", True) else None,
+                    )
+            st.caption(f"Recorded as run `{logged[sig][:8]}` ({tracker_label}) · "
+                       "compare runs in the Experiment Tracking tab")
+        except Exception as e:  # tracking must never take the analysis down
+            st.warning(f"This run was not recorded: {e}")
 
     col_roc, col_pr, col_thresh = st.columns(3)
     with col_roc:
@@ -575,3 +623,108 @@ with tab_real:
             st.dataframe(out, width="stretch")
             st.download_button("Download predictions", out.to_csv(index=False),
                               file_name="predictions.csv")
+
+
+# ============================================================== TRACKING ==
+with tab_track:
+    st.subheader("Experiment tracking (MLflow, stored locally or in Databricks)")
+    st.markdown(
+        "Each time the detector is trained in the **ML Detection & Statistics** tab, "
+        "its settings, scores and the trained model are saved as one *run*, so "
+        "results can be compared and reproduced later instead of disappearing "
+        "when the app closes. Runs are stored in a local file by default, or in "
+        "a Databricks workspace if you connect one below."
+    )
+
+    opt1, opt2 = st.columns(2)
+    opt1.checkbox("Record every new training run", value=True, key="track_enabled")
+    opt2.checkbox("Store the trained model with each run (about 8 MB each)",
+                  value=True, key="track_model")
+
+    backend = st.radio("Where runs are stored", ["Local file", "Databricks workspace"],
+                       horizontal=True, key="track_backend")
+
+    if backend == "Databricks workspace":
+        dbx = st.session_state.get("dbx")
+        if dbx:
+            st.success(f"Connected to {dbx['host']} · experiment `{dbx['experiment']}`")
+            st.markdown(f"[Open the workspace experiments page]({dbx['host']}/ml/experiments)")
+            if st.button("Disconnect"):
+                del st.session_state["dbx"]
+                st.rerun()
+        else:
+            st.info("Not connected yet. Until you connect, runs keep going to the local file.")
+            with st.form("dbx_connect"):
+                host = st.text_input(
+                    "Workspace URL",
+                    placeholder="https://dbc-xxxxxxxx-xxxx.cloud.databricks.com")
+                token = st.text_input(
+                    "Personal access token", type="password",
+                    help="In Databricks: User Settings > Developer > Access tokens. "
+                         "Held in memory for this session only; never written to disk.")
+                experiment = st.text_input(
+                    "Experiment path", value=tracking.DEFAULT_DATABRICKS_EXPERIMENT,
+                    help="An absolute workspace path. /Users/<your login email>/hemodynamics "
+                         "also works. It is created if it does not exist.")
+                if st.form_submit_button("Connect", type="primary"):
+                    try:
+                        with st.spinner("Contacting the workspace..."):
+                            tracking.activate("databricks", host.strip().rstrip("/"),
+                                              token, experiment.strip())
+                        st.session_state["dbx"] = dict(
+                            host=host.strip().rstrip("/"), token=token.strip(),
+                            experiment=experiment.strip())
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not connect: {e}")
+    else:
+        st.caption(
+            "Stored in `outputs/mlflow.db`. For MLflow's own full interface run "
+            "`mlflow ui --backend-store-uri sqlite:///outputs/mlflow.db` in the project folder."
+        )
+
+    st.markdown("### Run history")
+    try:
+        tracker_label, exp_name = current_tracker()
+        runs = tracking.list_runs(exp_name)
+    except Exception as e:
+        runs = pd.DataFrame()
+        st.error(f"Could not read runs: {e}")
+
+    if runs.empty:
+        st.info("No runs recorded here yet. Train a detector in the ML Detection & Statistics tab.")
+    else:
+        metric_cols = [c for c in ["roc_auc", "pr_auc", "rf_accuracy", "svm_accuracy",
+                                   "sensitivity", "specificity", "best_threshold"]
+                       if c in runs.columns]
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Runs recorded", len(runs))
+        if "roc_auc" in runs:
+            best = runs.loc[runs["roc_auc"].idxmax()]
+            k2.metric("Best ROC AUC", f"{best['roc_auc']:.4f}")
+            k3.metric("Best run", str(best["run_id"])[:8])
+
+        front = ["started", "run_id"] + metric_cols
+        st.dataframe(runs[front + [c for c in runs.columns if c not in front and c != "run_name"]],
+                     use_container_width=True, hide_index=True)
+        st.download_button("Download run history (CSV)", runs.to_csv(index=False),
+                           file_name="run_history.csv", mime="text/csv")
+
+        st.markdown("### Compare runs")
+        param_cols = [c for c in runs.columns
+                      if c not in metric_cols + ["run_id", "started", "run_name"]
+                      and pd.api.types.is_numeric_dtype(runs[c]) and runs[c].nunique() > 1]
+        if len(runs) < 2 or not param_cols:
+            st.caption("Train again with a different setting (for example more sensor "
+                       "noise) and a comparison chart appears here.")
+        else:
+            cx, cy = st.columns(2)
+            default_x = param_cols.index("pressure_noise_mmhg") if "pressure_noise_mmhg" in param_cols else 0
+            x_col = cx.selectbox("Setting (x axis)", param_cols, index=default_x)
+            y_col = cy.selectbox("Score (y axis)", metric_cols)
+            fig, ax = plt.subplots(figsize=(7, 3.5))
+            ordered = runs.sort_values(x_col)
+            ax.plot(ordered[x_col], ordered[y_col], "o", color="steelblue")
+            ax.set_xlabel(x_col); ax.set_ylabel(y_col); ax.grid(alpha=0.3)
+            ax.set_title(f"{y_col} across {len(runs)} recorded runs")
+            st.pyplot(fig); plt.close(fig)
