@@ -1,0 +1,20 @@
+# Look and feel of the app. Colours are set separately for light and dark
+# so the viewer's own light/dark choice (menu > Settings) still works.
+
+[theme]
+baseRadius = "medium"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#1c5cab"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f6fa"
+textColor = "#1a2433"
+borderColor = "#d9e0ea"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#171c26"
+textColor = "#e8ecf2"
+borderColor = "#2a3242"
