@@ -25,6 +25,7 @@ import linalg_analysis as la
 import real_data as rd
 import tracking
 import charts
+import databricks_tables as dbt
 
 st.set_page_config(page_title="Vascular Flow Anomaly Detection", layout="wide")
 
@@ -40,6 +41,12 @@ BP_SOURCES = {
     "Real: UCI Cleveland patients (303)": ("uci",),
     "Real: NHANES US adults (4,633)": ("nhanes",),
     "Real: both cohorts (4,936)": ("uci", "nhanes"),
+}
+
+
+UPLOAD_TABLES = {
+    "Simulated patients (current training set)": "hemodynamics_simulated_patients",
+    "Real people (both cohorts)": "hemodynamics_real_cohorts",
 }
 
 
@@ -728,7 +735,53 @@ with tab_track:
             st.markdown(f"[Open the workspace experiments page]({dbx['host']}/ml/experiments)")
             if st.button("Disconnect"):
                 del st.session_state["dbx"]
+                st.session_state.pop("dbx_meta", None)
                 st.rerun()
+
+            # ---- send a data table to the workspace ----
+            with st.container(border=True):
+                st.markdown("**Send a data table to Databricks**")
+                st.caption("Creates a real table under Catalog, so the data can be queried "
+                           "in a notebook or charted on a Databricks dashboard. An existing "
+                           "table with the same name is replaced.")
+                if "dbx_meta" not in st.session_state:
+                    try:
+                        st.session_state["dbx_meta"] = dict(
+                            warehouses=dbt.list_warehouses(dbx["host"], dbx["token"]),
+                            schema=dbt.default_schema(dbx["host"], dbx["token"]))
+                    except dbt.DatabricksError as e:
+                        st.session_state["dbx_meta"] = dict(warehouses=[], schema="workspace.default",
+                                                            error=str(e))
+                meta = st.session_state["dbx_meta"]
+                if meta.get("error"):
+                    st.error(meta["error"])
+                if not meta["warehouses"]:
+                    st.warning("No SQL warehouse was found in this workspace. Create one under "
+                               "SQL Warehouses in Databricks, then disconnect and reconnect here.")
+                else:
+                    u1, u2, u3 = st.columns(3)
+                    which = u1.selectbox("Table to send", list(UPLOAD_TABLES))
+                    schema = u2.text_input("Destination (catalog.schema)", value=meta["schema"])
+                    wh = u3.selectbox("SQL warehouse", meta["warehouses"],
+                                      format_func=lambda w: f"{w['name']} ({w['state'].lower()})")
+                    table_name = UPLOAD_TABLES[which]
+                    if st.button(f"Send to Databricks as {table_name}", type="primary"):
+                        to_send = (st.session_state["ml_df"] if which.startswith("Simulated")
+                                   else cached_cohorts())
+                        bar = st.progress(0.0, text="Starting the warehouse and creating the table. "
+                                                    "A stopped warehouse can take a few minutes.")
+                        try:
+                            n = dbt.upload_dataframe(
+                                to_send, dbx["host"], dbx["token"], wh["id"], schema.strip(),
+                                table_name,
+                                progress=lambda f: bar.progress(f, text=f"Sending rows: {f:.0%}"))
+                            bar.empty()
+                            st.success(f"Sent {n:,} rows to `{schema.strip()}.{table_name}`.")
+                            st.markdown(f"[Open the table in Databricks]"
+                                        f"({dbt.table_url(dbx['host'], schema.strip(), table_name)})")
+                        except dbt.DatabricksError as e:
+                            bar.empty()
+                            st.error(str(e))
         else:
             st.info("Not connected yet. Until you connect, runs keep going to the local file.")
             with st.form("dbx_connect"):

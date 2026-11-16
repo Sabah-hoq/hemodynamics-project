@@ -126,6 +126,12 @@ configuration that is already recorded is not recorded twice.
   then appear under Experiments in the workspace. The token is held in
   memory for the session and never written to disk.
 
+Once connected, the same tab has **Send a data table to Databricks**. It
+creates a real table under Catalog (`hemodynamics_simulated_patients` or
+`hemodynamics_real_cohorts`) through a SQL warehouse, so the data can be
+queried in a notebook or charted on a Databricks dashboard. An existing
+table of the same name is replaced.
+
 The dataset here is a few thousand rows, so Databricks is used for what
 it adds at this size (a shared, permanent record of experiments and
 models), not for cluster computing.
@@ -155,6 +161,7 @@ real_data.py          loads the real UCI dataset; real-BP-driven simulation & pr
 visualize.py          vessel-tree layout and the static diagram used by main.py
 charts.py             interactive Plotly charts used by the app
 tracking.py           MLflow experiment tracking (local SQLite or a Databricks workspace)
+databricks_tables.py   sends a data table to Databricks through the SQL statement API
 app.py                Streamlit interactive dashboard (run this)
 main.py, main_genetics.py   original command-line entry points -> outputs/
 data/                 real input data (uci_heart_disease.csv, nhanes_2009_2012_bp.csv)
